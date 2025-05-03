@@ -1,3 +1,5 @@
+// types.ts
+
 import { BaseSearchOptions } from "exa-js";
 
 export type Role = 'user' | 'assistant' | 'system' | 'tool' | 'function';
