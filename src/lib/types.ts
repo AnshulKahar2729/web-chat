@@ -1,6 +1,12 @@
+import { BaseSearchOptions } from "exa-js";
+
+export type Role = 'user' | 'assistant' | 'system' | 'tool' | 'function';
+
+export type exaCategory = BaseSearchOptions['category'];
+
 export type Message = {
     id: string;
-    role: 'user' | 'assistant' | 'system' | 'tool';
+    role: Role;
     content: string;
     name?: string;
     tool_call_id?: string;
