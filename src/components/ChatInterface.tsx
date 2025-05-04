@@ -1,4 +1,3 @@
-// components/ChatInterface.tsx
 import React, { useState, useEffect } from 'react';
 import { useChat } from '@ai-sdk/react';
 import ChatMessage from './ChatMessage';
@@ -14,9 +13,16 @@ interface SearchResult {
   snippet: string;
 }
 
+interface SearchAnalysis {
+  domain: string | null;
+  category: string;
+  cleanQuery: string;
+}
+
 interface WebSearchResult {
   results: SearchResult[];
   message: string;
+  analysis?: SearchAnalysis;
 }
 
 interface ToolCall {
@@ -37,6 +43,8 @@ const ChatInterface: React.FC = () => {
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
   const [isSearching, setIsSearching] = useState<boolean>(false);
   const [lastSearchQuery, setLastSearchQuery] = useState<string>('');
+  const [searchDomain, setSearchDomain] = useState<string | null>(null);
+  const [searchCategory, setSearchCategory] = useState<string | null>(null);
   const [selectedCategory, setSelectedCategory] = useState<exaCategory | undefined>(undefined);
   
   const {
@@ -88,17 +96,31 @@ const ChatInterface: React.FC = () => {
       if ('result' in item && item.result) {
         try {
           const toolResponse = item as unknown as ToolResponse;
-          if (toolResponse.result && 
-              toolResponse.result.results && 
-              Array.isArray(toolResponse.result.results)) {
-            setSearchResults(toolResponse.result.results);
+          if (toolResponse.result) {
+            // Store search results
+            if (toolResponse.result.results && Array.isArray(toolResponse.result.results)) {
+              setSearchResults(toolResponse.result.results);
+            }
+            
+            // Store analysis information if available
+            if (toolResponse.result.analysis) {
+              setSearchDomain(toolResponse.result.analysis.domain);
+              
+              // Only set the category from analysis if the user hasn't already selected one
+              if (!selectedCategory && toolResponse.result.analysis.category && 
+                  toolResponse.result.analysis.category !== 'general') {
+                setSearchCategory(toolResponse.result.analysis.category);
+              } else {
+                setSearchCategory(selectedCategory || null);
+              }
+            }
           }
         } catch (e) {
           console.error('Error processing tool response:', e);
         }
       }
     }
-  }, [data]);
+  }, [data, selectedCategory]);
 
   const handleSendMessage = async (content: string) => {
     console.log('Sending message:', content);
@@ -131,8 +153,16 @@ const ChatInterface: React.FC = () => {
     return (
       <div className="mt-4 p-3 bg-gray-50 rounded-md border border-gray-200">
         <h3 className="text-sm font-medium text-gray-700 mb-2">
-          {lastSearchQuery ? `Search Results for "${lastSearchQuery}":` : 'Search Results:'}
-          {selectedCategory && <span className="ml-1 text-blue-600">({selectedCategory})</span>}
+          {lastSearchQuery ? (
+            <>
+              Search Results for "{lastSearchQuery}"
+              {searchDomain && <span className="ml-1 text-blue-600">from {searchDomain}</span>}
+              {searchCategory && !selectedCategory && <span className="ml-1 text-blue-600">({searchCategory})</span>}
+              {selectedCategory && <span className="ml-1 text-blue-600">({selectedCategory})</span>}
+            </>
+          ) : (
+            'Search Results:'
+          )}
         </h3>
         <ul className="space-y-2">
           {searchResults.map((result, index) => (
@@ -145,6 +175,9 @@ const ChatInterface: React.FC = () => {
               >
                 {result.title || 'Untitled'}
               </a>
+              <span className="text-xs text-gray-500 ml-1">
+                ({new URL(result.url).hostname})
+              </span>
               {result.snippet && (
                 <p className="text-gray-600 mt-1">{result.snippet}</p>
               )}
@@ -159,7 +192,7 @@ const ChatInterface: React.FC = () => {
     <div className="flex flex-col h-screen max-w-4xl mx-auto p-4">
       <div className="bg-white rounded-lg shadow-md p-4 flex-1 overflow-y-auto mb-4">
         <h1 className="text-2xl font-bold mb-6 text-center">
-          AI Chat with Web Search
+          AI Chat with Smart Web Search
         </h1>
         
         {/* Add category selector */}
@@ -171,12 +204,23 @@ const ChatInterface: React.FC = () => {
         <div className="space-y-4">
           {messages.length === 0 ? (
             <div className="text-center text-gray-500 my-8">
-              Start a conversation by sending a message below.
-              {selectedCategory && (
-                <div className="mt-2 text-sm text-blue-600">
-                  Results will be filtered to: {selectedCategory}
-                </div>
-              )}
+              <p>Start a conversation by sending a message below.</p>
+              <p className="mt-2 text-sm">
+                {searchEnabled ? (
+                  <>
+                    <span className="font-medium">Pro tip:</span> You can search specific websites by mentioning them in your query.
+                    <br />
+                    <span className="text-xs text-gray-600">Example: "Find information about AI from MIT's website"</span>
+                    {selectedCategory && (
+                      <span className="block mt-1 text-blue-600">
+                        Results will be filtered to: {selectedCategory}
+                      </span>
+                    )}
+                  </>
+                ) : (
+                  'Web search is currently disabled.'
+                )}
+              </p>
             </div>
           ) : (
             messages.map((message, index) => (
@@ -197,6 +241,8 @@ const ChatInterface: React.FC = () => {
               {isSearching && (
                 <div className="text-xs mt-1">
                   Searching the web for information
+                  {searchDomain && <span> on {searchDomain}</span>}
+                  {searchCategory && !selectedCategory && <span> in category: {searchCategory}</span>}
                   {selectedCategory && <span> in category: {selectedCategory}</span>}
                   ...
                 </div>
