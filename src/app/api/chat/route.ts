@@ -1,62 +1,55 @@
-// app/api/chat/route.ts
-import { createOpenAI } from '@ai-sdk/openai';
-import { streamText, tool } from 'ai';
-import { GITHUB_ENDPOINT, GITHUB_MODEL_NAME, GITHUB_TOKEN } from '@/utils/config';
-import { z } from 'zod';
-import { performWebSearch } from '@/lib/exaSearch';
-import { OpenAIChatModelId } from '@ai-sdk/openai/internal';
-import { exaCategory } from '@/lib/types';
+import { NextRequest } from 'next/server';
+import OpenAI from 'openai';
+import { EXA_BASE_URL, EXA_API_KEY } from '@/utils/config';
 
-export const maxDuration = 60; // allow long tool calls if needed
+export const runtime = 'edge';
 
-export async function POST(req: Request) {
-  const { messages, searchCategory } = await req.json();
-  console.log("Received messages:", messages);
-  console.log("Search category:", searchCategory);
+const client = new OpenAI({
+  baseURL: EXA_BASE_URL,
+  apiKey: EXA_API_KEY,
+});
 
-  const githubProvider = createOpenAI({
-    baseURL: GITHUB_ENDPOINT,
-    apiKey: GITHUB_TOKEN,
-  });
+export async function POST(req: NextRequest) {
+  const { messages } = await req.json();
 
-  const systemMessage = {
-    role: 'system',
-    content: `You are a helpful assistant with access to web search capabilities.
+  if (!messages || !Array.isArray(messages)) {
+    return new Response(JSON.stringify({ error: 'Messages array required' }), {
+      status: 400,
+    });
+  }
 
-If a user's question requires up-to-date or external information, you may call the "webSearch" tool using a natural language query.
+  try {
+    const stream = await client.chat.completions.create({
+      model: 'exa',
+      messages,
+      stream: true,
+    });
 
-After receiving search results, use them to answer the user's question clearly and concisely. Always cite the source using its URL in your response.
+    // Prepare a text encoder stream for SSE (Server-Sent Events)
+    const encoder = new TextEncoder();
+    const readableStream = new ReadableStream({
+      async start(controller) {
+        for await (const chunk of stream) {
+          const content = chunk.choices[0]?.delta?.content;
+          if (content) {
+            controller.enqueue(encoder.encode(content));
+          }
+        }
+        controller.close();
+      },
+    });
 
-${searchCategory ? `Focus your search on the "${searchCategory}" category when applicable.` : ''}
-Be brief, helpful, and accurate.`
-  };
+    return new Response(readableStream, {
+      headers: {
+        'Content-Type': 'text/plain; charset=utf-8',
+        'Cache-Control': 'no-cache',
+      },
+    });
 
-  const messagesWithSystem = messages.some((msg: any) => msg.role === 'system')
-    ? messages
-    : [systemMessage, ...messages];
-
-  const result = streamText({
-    model: githubProvider(GITHUB_MODEL_NAME as OpenAIChatModelId),
-    messages: messagesWithSystem,
-    tools: {
-      webSearch: tool({
-        description: 'Search the web for real-time information',
-        parameters: z.object({
-          query: z.string().describe('The search query to find real-time information on the web'),
-        }),
-        execute: async ({ query }) => {
-          console.log("Executing web search for:", query);
-          const formattedResults = await performWebSearch(query, 5, searchCategory as exaCategory);
-          console.log("Search results:", formattedResults);
-          return {
-            message: formattedResults
-          };
-        },
-      }),
-    },
-    toolChoice: "auto",
-    maxSteps: 4,
-  });
-
-  return result.toDataStreamResponse();
+  } catch (err: any) {
+    console.error('Chat API error:', err);
+    return new Response(JSON.stringify({ error: 'Internal Server Error' }), {
+      status: 500,
+    });
+  }
 }
