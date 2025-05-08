@@ -6,6 +6,7 @@ import remarkGfm from 'remark-gfm';
 import rehypeRaw from 'rehype-raw';
 
 const categories = [
+    { label: 'Chat Normally', systemMessage: 'You are a helpful, conversational assistant which search the relevant data from the web and provide the best answer.' },
     { label: 'Summarize Article', systemMessage: 'You are an assistant that summarizes articles in a concise and clear way.' },
     { label: 'News', systemMessage: 'You summarize news articles and highlight key points.' },
     { label: 'Personal Site', systemMessage: 'You review and summarize personal websites or blogs.' },
@@ -13,7 +14,6 @@ const categories = [
     { label: 'Explain Concept', systemMessage: 'You are an assistant that explains technical concepts in simple terms.' },
     { label: 'Generate Code', systemMessage: 'You are an assistant that generates clean and efficient code based on user requests.' },
     { label: 'SEO Content', systemMessage: 'You are an assistant that writes SEO-optimized content.' },
-    { label: 'Chat Normally', systemMessage: 'You are a helpful, conversational assistant.' },
     { label: 'Company', systemMessage: 'You provide summaries and insights about companies and their operations.' },
     { label: 'Research Paper', systemMessage: 'You summarize and explain research papers clearly and concisely.' },
     { label: 'PDF', systemMessage: 'You read and summarize content from PDF documents.' },
@@ -23,6 +23,21 @@ const categories = [
 type Message = {
     role: 'user' | 'assistant';
     content: string;
+    sources?: Array<{url: string, title: string}>;
+};
+
+// Thinking animation component
+const ThinkingAnimation = () => {
+    return (
+        <div className="flex items-center space-x-2 p-3 bg-gray-100 rounded-xl max-w-[75%] rounded-bl-none">
+            <div className="flex space-x-1">
+                <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></div>
+                <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></div>
+                <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '600ms' }}></div>
+            </div>
+            <span className="text-sm text-gray-500">Searching the web...</span>
+        </div>
+    );
 };
 
 export default function ChatPage() {
@@ -31,6 +46,29 @@ export default function ChatPage() {
     const [loading, setLoading] = useState(false);
     const [systemMessage, setSystemMessage] = useState(categories[0].systemMessage);
     const chatEndRef = useRef<HTMLDivElement>(null);
+
+    // Function to extract URLs from markdown links
+    const extractSourcesFromContent = (content: string) => {
+        const sources: Array<{url: string, title: string}> = [];
+        // Match markdown links [title](url)
+        const linkRegex = /\[([^\]]+)\]\(([^)]+)\)/g;
+        let match;
+        
+        while ((match = linkRegex.exec(content)) !== null) {
+            sources.push({
+                title: match[1],
+                url: match[2]
+            });
+        }
+        
+        return sources.length > 0 ? sources : undefined;
+    };
+
+    // Function to format citation links
+    const formatCitations = (content: string) => {
+        // Replace numbered citations like [1], [2], etc. with superscript numbers
+        return content.replace(/\[(\d+)\]/g, '<sup>$1</sup>');
+    };
 
     const sendMessage = async () => {
         if (!input.trim()) return;
@@ -62,22 +100,54 @@ export default function ChatPage() {
             const decoder = new TextDecoder();
             let assistantReply = '';
 
+            // Add an empty assistant message to show the thinking animation
+            setMessages([...updatedMessages, { role: 'assistant', content: '' }]);
+
+            // Processing SSE stream from Perplexity
             while (true) {
                 const { done, value } = await reader.read();
                 if (done) break;
+                
                 const chunk = decoder.decode(value);
-                assistantReply += chunk;
-                setMessages((prev) => [
-                    ...updatedMessages,
-                    { role: 'assistant', content: assistantReply },
-                ]);
+                
+                // Handle SSE format from Perplexity
+                const lines = chunk.split('\n');
+                for (const line of lines) {
+                    if (line.startsWith('data: ')) {
+                        try {
+                            const data = JSON.parse(line.substring(6));
+                            // Check if this is the [DONE] message
+                            if (data === '[DONE]') continue;
+                            
+                            // Extract content from Perplexity response format
+                            const content = data.choices?.[0]?.delta?.content || '';
+                            if (content) {
+                                assistantReply += content;
+                                const formattedContent = formatCitations(assistantReply);
+                                const sources = extractSourcesFromContent(assistantReply);
+                                
+                                setMessages((prev) => [
+                                    ...updatedMessages,
+                                    { 
+                                        role: 'assistant', 
+                                        content: formattedContent,
+                                        sources
+                                    },
+                                ]);
+                            }
+                        } catch (e) {
+                            // Skip invalid JSON
+                            console.warn('Invalid SSE data:', line.substring(6));
+                        }
+                    }
+                }
             }
 
         } catch (error) {
             console.error('Chat error:', error);
             setMessages((prev) => [
                 ...updatedMessages,
-                { role: 'assistant', content: '⚠️ Error fetching response.' },
+                { role: 'assistant', content: '⚠️ Error fetching response. Please try again.' },
             ]);
         } finally {
             setLoading(false);
@@ -88,9 +158,34 @@ export default function ChatPage() {
         chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
     }, [messages]);
 
+    // Custom renderer for code blocks
+    const CodeBlock = ({className, children}: {className?: string, children: React.ReactNode}) => {
+        const language = className ? className.replace(/language-/, '') : '';
+        const codeString = children?.toString() || '';
+        
+        return (
+            <div className="relative rounded-md overflow-hidden my-4">
+                <div className="flex items-center justify-between bg-gray-800 px-4 py-2">
+                    <span className="text-xs font-mono text-gray-400">{language || 'code'}</span>
+                    <button 
+                        className="text-xs text-gray-400 hover:text-white transition"
+                        onClick={() => {
+                            navigator.clipboard.writeText(codeString);
+                        }}
+                    >
+                        Copy
+                    </button>
+                </div>
+                <pre className="bg-gray-900 p-4 overflow-x-auto text-gray-100 text-sm">
+                    <code>{children}</code>
+                </pre>
+            </div>
+        );
+    };
+
     return (
         <div className="min-h-screen bg-gradient-to-br from-gray-50 to-gray-200 flex flex-col items-center p-4">
-            <h2 className="text-3xl font-extrabold text-gray-800 mb-3">EXA AI Assistant</h2>
+            <h2 className="text-3xl font-extrabold text-gray-800 mb-3">Perplexity AI Assistant</h2>
 
             {/* Category Selector */}
             <div className="w-full max-w-3xl overflow-x-auto whitespace-nowrap mb-3 flex gap-2 pb-2 border-b scrollbar-thin scrollbar-thumb-gray-400">
@@ -118,28 +213,83 @@ export default function ChatPage() {
                             key={idx}
                             className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
                         >
-                            <div
-                                className={`p-3 rounded-xl max-w-[75%] text-base leading-relaxed transition ${
-                                    msg.role === 'user'
-                                        ? 'bg-blue-500 text-white rounded-br-none'
-                                        : 'bg-gray-100 text-gray-800 rounded-bl-none'
-                                }`}
-                            >
-                                <span className="block text-sm font-semibold mb-1">
-                                    {msg.role === 'user' ? 'You' : 'Assistant'}
-                                </span>
-                                <ReactMarkdown
-                                    remarkPlugins={[remarkGfm]}
-                                    rehypePlugins={[rehypeRaw]}
-                                    components={{
-                                        p: ({ node, ...props }) => (
-                                            <p {...props} className="prose prose-sm max-w-full" />
-                                        ),
-                                    }}
+                            {msg.role === 'assistant' && loading && idx === messages.length - 1 && msg.content === '' ? (
+                                <ThinkingAnimation />
+                            ) : (
+                                <div
+                                    className={`p-3 rounded-xl max-w-[75%] text-base leading-relaxed transition ${
+                                        msg.role === 'user'
+                                            ? 'bg-blue-500 text-white rounded-br-none'
+                                            : 'bg-gray-100 text-gray-800 rounded-bl-none'
+                                    }`}
                                 >
-                                    {msg.content}
-                                </ReactMarkdown>
-                            </div>
+                                    <span className="block text-sm font-semibold mb-1">
+                                        {msg.role === 'user' ? 'You' : 'Assistant'}
+                                    </span>
+                                    <div className="prose prose-sm max-w-full">
+                                        <ReactMarkdown
+                                            remarkPlugins={[remarkGfm]}
+                                            rehypePlugins={[rehypeRaw]}
+                                            components={{
+                                                p: ({ node, ...props }) => (
+                                                    <p {...props} className="my-2" />
+                                                ),
+                                                h1: ({ node, ...props }) => (
+                                                    <h1 {...props} className="text-xl font-bold my-3" />
+                                                ),
+                                                h2: ({ node, ...props }) => (
+                                                    <h2 {...props} className="text-lg font-bold my-2" />
+                                                ),
+                                                h3: ({ node, ...props }) => (
+                                                    <h3 {...props} className="text-md font-bold my-2" />
+                                                ),
+                                                ul: ({ node, ...props }) => (
+                                                    <ul {...props} className="list-disc pl-5 my-2" />
+                                                ),
+                                                ol: ({ node, ...props }) => (
+                                                    <ol {...props} className="list-decimal pl-5 my-2" />
+                                                ),
+                                                li: ({ node, ...props }) => (
+                                                    <li {...props} className="my-1" />
+                                                ),
+                                                blockquote: ({ node, ...props }) => (
+                                                    <blockquote {...props} className="border-l-4 border-gray-300 pl-4 italic my-2" />
+                                                ),
+                                                code: ({ node, className, children, ...props }) => {
+                                                    const match = /language-(\w+)/.exec(className || '');
+                                                    return match ? (
+                                                        <CodeBlock className={className}>{children}</CodeBlock>
+                                                    ) : (
+                                                        <code {...props} className="px-1 py-0.5 bg-gray-200 rounded text-red-500 text-sm">{children}</code>
+                                                    );
+                                                }
+                                            }}
+                                        >
+                                            {msg.content}
+                                        </ReactMarkdown>
+                                    </div>
+                                    
+                                    {/* Sources/Citations Section */}
+                                    {msg.sources && msg.sources.length > 0 && (
+                                        <div className="mt-3 pt-2 border-t border-gray-200">
+                                            <p className="text-xs text-gray-500 mb-1">Sources:</p>
+                                            <div className="flex flex-wrap gap-2">
+                                                {msg.sources.map((source, idx) => (
+                                                    <a 
+                                                        key={idx}
+                                                        href={source.url}
+                                                        target="_blank"
+                                                        rel="noopener noreferrer"
+                                                        className="text-xs bg-gray-200 hover:bg-gray-300 rounded-full px-2 py-1 text-blue-600 transition"
+                                                    >
+                                                        {source.title || `Source ${idx + 1}`}
+                                                    </a>
+                                                ))}
+                                            </div>
+                                        </div>
+                                    )}
+                                </div>
+                            )}
                         </div>
                     ))}
                     <div ref={chatEndRef} />
@@ -175,7 +325,7 @@ export default function ChatPage() {
                                 : 'bg-blue-600 text-white hover:bg-blue-700'
                         }`}
                     >
-                        {loading ? 'Sending...' : 'Send'}
+                        {loading ? 'Searching...' : 'Send'}
                     </button>
                 </div>
             </div>
