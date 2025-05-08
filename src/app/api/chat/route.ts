@@ -1,13 +1,7 @@
 import { NextRequest } from 'next/server';
-import OpenAI from 'openai';
-import { EXA_BASE_URL, EXA_API_KEY } from '@/utils/config';
+import { PERPLEXITY_API_KEY, DEFAULT_PERPLEXITY_MODEL } from '@/utils/config';
 
 export const runtime = 'edge';
-
-const client = new OpenAI({
-  baseURL: EXA_BASE_URL,
-  apiKey: EXA_API_KEY,
-});
 
 export async function POST(req: NextRequest) {
   const { messages } = await req.json();
@@ -19,37 +13,71 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    const stream = await client.chat.completions.create({
-      model: 'exa',
-      messages,
-      stream: true,
-    });
-
-    // Prepare a text encoder stream for SSE (Server-Sent Events)
-    const encoder = new TextEncoder();
-    const readableStream = new ReadableStream({
-      async start(controller) {
-        for await (const chunk of stream) {
-          const content = chunk.choices[0]?.delta?.content;
-          if (content) {
-            controller.enqueue(encoder.encode(content));
-          }
-        }
-        controller.close();
-      },
-    });
-
-    return new Response(readableStream, {
+    // Perplexity API endpoint
+    const perplexityEndpoint = 'https://api.perplexity.ai/chat/completions';
+    
+    // Log the messages being sent (for debugging)
+    console.log('Request to Perplexity:', JSON.stringify({
+      model: DEFAULT_PERPLEXITY_MODEL, 
+      messages: messages,
+      stream: true
+    }, null, 2));
+    
+    // Make a request to Perplexity API
+    const perplexityResponse = await fetch(perplexityEndpoint, {
+      method: 'POST',
       headers: {
-        'Content-Type': 'text/plain; charset=utf-8',
-        'Cache-Control': 'no-cache',
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${PERPLEXITY_API_KEY}`
       },
+      body: JSON.stringify({
+        model: DEFAULT_PERPLEXITY_MODEL,
+        messages: messages,
+        stream: true,
+        // For sonar models, optionally enable these search parameters:
+        options: {
+          temperature: 0.7,
+          max_tokens: 1024,
+          // These options are specifically for the sonar models with web search
+          search_priority: "high", // Controls the priority of search results
+          include_citations: true, // Include citations for search results
+          include_answer_source: true // Include the source of the answer
+        }
+      })
+    });
+
+    if (!perplexityResponse.ok) {
+      // Try to get more detailed error information
+      const errorData = await perplexityResponse.text();
+      console.error('Perplexity API error:', {
+        status: perplexityResponse.status,
+        statusText: perplexityResponse.statusText,
+        body: errorData
+      });
+      throw new Error(`Perplexity API error: ${perplexityResponse.statusText} - ${errorData}`);
+    }
+
+    // Forward the stream from Perplexity to the client
+    return new Response(perplexityResponse.body, {
+      headers: {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+      }
     });
 
   } catch (err: any) {
     console.error('Chat API error:', err);
-    return new Response(JSON.stringify({ error: 'Internal Server Error' }), {
+    
+    // Return more detailed error information to help debug
+    return new Response(JSON.stringify({ 
+      error: err.message || 'Internal Server Error',
+      stack: err.stack,
+      details: 'Please check your Perplexity API key and model availability'
+    }), {
       status: 500,
+      headers: {
+        'Content-Type': 'application/json'
+      }
     });
   }
 }
