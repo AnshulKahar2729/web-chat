@@ -1,5 +1,6 @@
 import { NextRequest } from 'next/server';
-import { PERPLEXITY_API_KEY, DEFAULT_PERPLEXITY_MODEL } from '@/utils/config';
+import { GOOGLE_API_KEY, DEFAULT_GOOGLE_MODEL } from '@/utils/config';
+import { GoogleGenerativeAI } from '@google/generative-ai';
 
 export const runtime = 'edge';
 
@@ -13,66 +14,57 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    // Perplexity API endpoint
-    const perplexityEndpoint = 'https://api.perplexity.ai/chat/completions';
-    
-    // Log the messages being sent (for debugging)
-    console.log('Request to Perplexity:', JSON.stringify({
-      model: DEFAULT_PERPLEXITY_MODEL, 
-      messages: messages,
-      stream: true
-    }, null, 2));
-    
-    // Make a request to Perplexity API
-    const perplexityResponse = await fetch(perplexityEndpoint, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${PERPLEXITY_API_KEY}`
-      },
-      body: JSON.stringify({
-        model: DEFAULT_PERPLEXITY_MODEL,
-        messages: messages,
-        stream: true,
-        // For sonar models, optionally enable these search parameters:
-        options: {
-          temperature: 0.7,
-          max_tokens: 1024,
-          // These options are specifically for the sonar models with web search
-          search_priority: "high", // Controls the priority of search results
-          include_citations: true, // Include citations for search results
-          include_answer_source: true // Include the source of the answer
-        }
-      })
+    // Initialize Google AI
+    const genAI = new GoogleGenerativeAI(GOOGLE_API_KEY);
+    const model = genAI.getGenerativeModel({ model: DEFAULT_GOOGLE_MODEL });
+
+    // Convert messages to Gemini format
+    const chat = model.startChat({
+      history: messages.slice(0, -1).map(msg => ({
+        role: msg.role === 'user' ? 'user' : 'model',
+        parts: [{ text: msg.content }],
+      })),
     });
 
-    if (!perplexityResponse.ok) {
-      // Try to get more detailed error information
-      const errorData = await perplexityResponse.text();
-      console.error('Perplexity API error:', {
-        status: perplexityResponse.status,
-        statusText: perplexityResponse.statusText,
-        body: errorData
-      });
-      throw new Error(`Perplexity API error: ${perplexityResponse.statusText} - ${errorData}`);
-    }
+    // Get the last message
+    const lastMessage = messages[messages.length - 1];
+    
+    // Log the request (for debugging)
+    console.log('Request to Gemini:', JSON.stringify({
+      model: DEFAULT_GOOGLE_MODEL,
+      messages: messages,
+    }, null, 2));
 
-    // Forward the stream from Perplexity to the client
-    return new Response(perplexityResponse.body, {
+    // Send the message and get the response
+    const result = await chat.sendMessage(lastMessage.content);
+    const response = await result.response;
+    const text = response.text();
+
+    // Return the response as a stream
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream({
+      start(controller) {
+        // Send the response as a single chunk
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ choices: [{ delta: { content: text } }] })}\n\n`));
+        controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+        controller.close();
+      },
+    });
+
+    return new Response(stream, {
       headers: {
         'Content-Type': 'text/event-stream',
         'Cache-Control': 'no-cache',
-      }
+      },
     });
 
   } catch (err: any) {
     console.error('Chat API error:', err);
     
-    // Return more detailed error information to help debug
     return new Response(JSON.stringify({ 
       error: err.message || 'Internal Server Error',
       stack: err.stack,
-      details: 'Please check your Perplexity API key and model availability'
+      details: 'Please check your Google AI API key and model availability'
     }), {
       status: 500,
       headers: {
