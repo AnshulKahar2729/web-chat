@@ -4,26 +4,13 @@ import React, { useState, useRef, useEffect } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeRaw from 'rehype-raw';
-
-const categories = [
-    { label: 'Chat Normally', systemMessage: 'You are a helpful, conversational assistant which search the relevant data from the web and provide the best answer.' },
-    { label: 'Summarize Article', systemMessage: 'You are an assistant that summarizes articles in a concise and clear way.' },
-    { label: 'News', systemMessage: 'You summarize news articles and highlight key points.' },
-    { label: 'Personal Site', systemMessage: 'You review and summarize personal websites or blogs.' },
-    { label: 'LinkedIn Profile', systemMessage: 'You analyze LinkedIn profiles and summarize professional experience.' },
-    { label: 'Explain Concept', systemMessage: 'You are an assistant that explains technical concepts in simple terms.' },
-    { label: 'Generate Code', systemMessage: 'You are an assistant that generates clean and efficient code based on user requests.' },
-    { label: 'SEO Content', systemMessage: 'You are an assistant that writes SEO-optimized content.' },
-    { label: 'Company', systemMessage: 'You provide summaries and insights about companies and their operations.' },
-    { label: 'Research Paper', systemMessage: 'You summarize and explain research papers clearly and concisely.' },
-    { label: 'PDF', systemMessage: 'You read and summarize content from PDF documents.' },
-    { label: 'Financial Report', systemMessage: 'You summarize and explain financial reports and key metrics.' },
-];
+import { categories, Category } from '@/utils/categories';
 
 type Message = {
     role: 'user' | 'assistant';
     content: string;
     sources?: Array<{url: string, title: string}>;
+    audioUrl?: string;
 };
 
 // Thinking animation component
@@ -35,7 +22,32 @@ const ThinkingAnimation = () => {
                 <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></div>
                 <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '600ms' }}></div>
             </div>
-            <span className="text-sm text-gray-500">Searching the web...</span>
+            <span className="text-sm text-gray-500">Thinking...</span>
+        </div>
+    );
+};
+
+// Custom renderer for code blocks
+const CodeBlock = ({className, children}: {className?: string, children: React.ReactNode}) => {
+    const language = className ? className.replace(/language-/, '') : '';
+    const codeString = children?.toString() || '';
+    
+    return (
+        <div className="relative rounded-md overflow-hidden my-4">
+            <div className="flex items-center justify-between bg-gray-800 px-4 py-2">
+                <span className="text-xs font-mono text-gray-400">{language || 'code'}</span>
+                <button 
+                    className="text-xs text-gray-400 hover:text-white transition"
+                    onClick={() => {
+                        navigator.clipboard.writeText(codeString);
+                    }}
+                >
+                    Copy
+                </button>
+            </div>
+            <pre className="bg-gray-900 p-4 overflow-x-auto text-gray-100 text-sm">
+                <code>{children}</code>
+            </pre>
         </div>
     );
 };
@@ -45,12 +57,85 @@ export default function ChatPage() {
     const [input, setInput] = useState('');
     const [loading, setLoading] = useState(false);
     const [systemMessage, setSystemMessage] = useState(categories[0].systemMessage);
+    const [ttsLoading, setTtsLoading] = useState<number | null>(null);
+    const [currentAudio, setCurrentAudio] = useState<HTMLAudioElement | null>(null);
+    const [isPlaying, setIsPlaying] = useState(false);
     const chatEndRef = useRef<HTMLDivElement>(null);
 
+    // Function to clean markdown formatting
+    const cleanMarkdown = (text: string): string => {
+        return text
+            .replace(/```[\s\S]*?```/g, '') // Remove code blocks
+            .replace(/`([^`]+)`/g, '$1') // Remove inline code
+            .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1') // Remove markdown links but keep text
+            .replace(/\*\*([^*]+)\*\*/g, '$1') // Remove bold
+            .replace(/\*([^*]+)\*/g, '$1') // Remove italic
+            .replace(/#{1,6}\s/g, '') // Remove headers
+            .replace(/>\s/g, '') // Remove blockquotes
+            .replace(/\n{3,}/g, '\n\n') // Replace multiple newlines with double newline
+            .trim();
+    };
+
+    // Function to generate speech
+    const generateSpeech = async (text: string, messageIndex: number): Promise<void> => {
+        setTtsLoading(messageIndex);
+        try {
+            const response = await fetch('/api/tts', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ text: cleanMarkdown(text) }),
+            });
+
+            if (!response.ok) {
+                throw new Error('Failed to generate speech');
+            }
+
+            const audioBlob = await response.blob();
+            const audioUrl = URL.createObjectURL(audioBlob);
+            
+            // Update message with audio URL
+            setMessages((prev: Message[]) => prev.map((msg: Message, idx: number) => 
+                idx === messageIndex ? { ...msg, audioUrl } : msg
+            ));
+        } catch (error) {
+            console.error('TTS error:', error);
+        } finally {
+            setTtsLoading(null);
+        }
+    };
+
+    // Function to toggle play/pause
+    const togglePlayPause = (messageIndex: number): void => {
+        if (currentAudio) {
+            if (isPlaying) {
+                currentAudio.pause();
+            } else {
+                currentAudio.play();
+            }
+        } else if (messages[messageIndex].audioUrl) {
+            const audio = new Audio(messages[messageIndex].audioUrl);
+            setCurrentAudio(audio);
+            
+            audio.onended = () => {
+                setIsPlaying(false);
+                setCurrentAudio(null);
+            };
+
+            audio.onpause = () => {
+                setIsPlaying(false);
+            };
+
+            audio.onplay = () => {
+                setIsPlaying(true);
+            };
+
+            audio.play();
+        }
+    };
+
     // Function to extract URLs from markdown links
-    const extractSourcesFromContent = (content: string) => {
+    const extractSourcesFromContent = (content: string): Array<{url: string, title: string}> | undefined => {
         const sources: Array<{url: string, title: string}> = [];
-        // Match markdown links [title](url)
         const linkRegex = /\[([^\]]+)\]\(([^)]+)\)/g;
         let match;
         
@@ -65,12 +150,12 @@ export default function ChatPage() {
     };
 
     // Function to format citation links
-    const formatCitations = (content: string) => {
-        // Replace numbered citations like [1], [2], etc. with superscript numbers
+    const formatCitations = (content: string): string => {
         return content.replace(/\[(\d+)\]/g, '<sup>$1</sup>');
     };
 
-    const sendMessage = async () => {
+    // Update the sendMessage function to auto-trigger TTS
+    const sendMessage = async (): Promise<void> => {
         if (!input.trim()) return;
 
         const newMessage: Message = { role: 'user', content: input.trim() };
@@ -103,30 +188,25 @@ export default function ChatPage() {
             // Add an empty assistant message to show the thinking animation
             setMessages([...updatedMessages, { role: 'assistant', content: '' }]);
 
-            // Processing SSE stream from Perplexity
             while (true) {
                 const { done, value } = await reader.read();
                 if (done) break;
                 
                 const chunk = decoder.decode(value);
-                
-                // Handle SSE format from Perplexity
                 const lines = chunk.split('\n');
                 for (const line of lines) {
                     if (line.startsWith('data: ')) {
                         try {
                             const data = JSON.parse(line.substring(6));
-                            // Check if this is the [DONE] message
                             if (data === '[DONE]') continue;
                             
-                            // Extract content from Perplexity response format
                             const content = data.choices?.[0]?.delta?.content || '';
                             if (content) {
                                 assistantReply += content;
                                 const formattedContent = formatCitations(assistantReply);
                                 const sources = extractSourcesFromContent(assistantReply);
                                 
-                                setMessages((prev) => [
+                                setMessages((prev: Message[]) => [
                                     ...updatedMessages,
                                     { 
                                         role: 'assistant', 
@@ -136,16 +216,20 @@ export default function ChatPage() {
                                 ]);
                             }
                         } catch (e) {
-                            // Skip invalid JSON
                             console.warn('Invalid SSE data:', line.substring(6));
                         }
                     }
                 }
             }
 
+            // Auto-trigger TTS for the complete response
+            if (assistantReply) {
+                generateSpeech(assistantReply, updatedMessages.length);
+            }
+
         } catch (error) {
             console.error('Chat error:', error);
-            setMessages((prev) => [
+            setMessages((prev: Message[]) => [
                 ...updatedMessages,
                 { role: 'assistant', content: '⚠️ Error fetching response. Please try again.' },
             ]);
@@ -158,47 +242,26 @@ export default function ChatPage() {
         chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
     }, [messages]);
 
-    // Custom renderer for code blocks
-    const CodeBlock = ({className, children}: {className?: string, children: React.ReactNode}) => {
-        const language = className ? className.replace(/language-/, '') : '';
-        const codeString = children?.toString() || '';
-        
-        return (
-            <div className="relative rounded-md overflow-hidden my-4">
-                <div className="flex items-center justify-between bg-gray-800 px-4 py-2">
-                    <span className="text-xs font-mono text-gray-400">{language || 'code'}</span>
-                    <button 
-                        className="text-xs text-gray-400 hover:text-white transition"
-                        onClick={() => {
-                            navigator.clipboard.writeText(codeString);
-                        }}
-                    >
-                        Copy
-                    </button>
-                </div>
-                <pre className="bg-gray-900 p-4 overflow-x-auto text-gray-100 text-sm">
-                    <code>{children}</code>
-                </pre>
-            </div>
-        );
+    // Function to handle category selection
+    const handleCategorySelect = (category: Category): void => {
+        setSystemMessage(category.systemMessage);
     };
 
     return (
         <div className="min-h-screen bg-gradient-to-br from-gray-50 to-gray-200 flex flex-col items-center p-4">
-            <h2 className="text-3xl font-extrabold text-gray-800 mb-3">Perplexity AI Assistant</h2>
+            <h2 className="text-3xl font-extrabold text-gray-800 mb-3">AI Assistant</h2>
 
             {/* Category Selector */}
-            <div className="w-full max-w-3xl overflow-x-auto whitespace-nowrap mb-3 flex gap-2 pb-2 border-b scrollbar-thin scrollbar-thumb-gray-400">
-                {categories.map((cat, idx) => (
+            <div className="flex space-x-2 overflow-x-auto p-4 bg-white border-b">
+                {categories.map((cat: Category, idx: number) => (
                     <button
                         key={idx}
-                        onClick={() => setSystemMessage(cat.systemMessage)}
-                        className={`px-4 py-1.5 rounded-full border text-sm flex-shrink-0 transition ${
+                        onClick={() => handleCategorySelect(cat)}
+                        className={`px-4 py-2 rounded-full text-sm font-medium whitespace-nowrap transition-colors ${
                             systemMessage === cat.systemMessage
-                                ? 'bg-blue-600 text-white border-blue-600 shadow-sm'
-                                : 'bg-white text-gray-800 border-gray-300 hover:bg-gray-100'
+                                ? 'bg-blue-500 text-white'
+                                : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
                         }`}
-                        disabled={loading}
                     >
                         {cat.label}
                     </button>
@@ -223,9 +286,46 @@ export default function ChatPage() {
                                             : 'bg-gray-100 text-gray-800 rounded-bl-none'
                                     }`}
                                 >
-                                    <span className="block text-sm font-semibold mb-1">
-                                        {msg.role === 'user' ? 'You' : 'Assistant'}
-                                    </span>
+                                    <div className="flex items-center justify-between mb-1">
+                                        <span className="text-sm font-semibold">
+                                            {msg.role === 'user' ? 'You' : 'Assistant'}
+                                        </span>
+                                        {msg.role === 'assistant' && (
+                                            <div className="flex items-center gap-2 mt-2">
+                                                {ttsLoading === idx ? (
+                                                    <span className="text-sm text-gray-500 flex items-center gap-2">
+                                                        <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24">
+                                                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                                                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                                                        </svg>
+                                                        Generating audio...
+                                                    </span>
+                                                ) : msg.audioUrl && (
+                                                    <button
+                                                        onClick={() => togglePlayPause(idx)}
+                                                        className="text-sm text-blue-500 hover:text-blue-600 flex items-center gap-1"
+                                                    >
+                                                        {isPlaying ? (
+                                                            <>
+                                                                <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 9v6m4-6v6m7-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                                                </svg>
+                                                                Pause
+                                                            </>
+                                                        ) : (
+                                                            <>
+                                                                <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />
+                                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                                                </svg>
+                                                                Play
+                                                            </>
+                                                        )}
+                                                    </button>
+                                                )}
+                                            </div>
+                                        )}
+                                    </div>
                                     <div className="prose prose-sm max-w-full">
                                         <ReactMarkdown
                                             remarkPlugins={[remarkGfm]}
@@ -325,7 +425,7 @@ export default function ChatPage() {
                                 : 'bg-blue-600 text-white hover:bg-blue-700'
                         }`}
                     >
-                        {loading ? 'Searching...' : 'Send'}
+                        {loading ? 'Thinking...' : 'Send'}
                     </button>
                 </div>
             </div>
