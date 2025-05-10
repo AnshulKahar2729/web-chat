@@ -4,7 +4,6 @@ import React, { useState, useRef, useEffect } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeRaw from 'rehype-raw';
-import { categories, Category } from '@/utils/categories';
 
 type Message = {
     role: 'user' | 'assistant';
@@ -56,7 +55,6 @@ export default function ChatPage() {
     const [messages, setMessages] = useState<Message[]>([]);
     const [input, setInput] = useState('');
     const [loading, setLoading] = useState(false);
-    const [systemMessage, setSystemMessage] = useState(categories[0].systemMessage);
     const [ttsLoading, setTtsLoading] = useState<number | null>(null);
     const [currentAudio, setCurrentAudio] = useState<HTMLAudioElement | null>(null);
     const [isPlaying, setIsPlaying] = useState(false);
@@ -174,7 +172,7 @@ export default function ChatPage() {
         return content.replace(/\[(\d+)\]/g, '<sup>$1</sup>');
     };
 
-    // Update the sendMessage function to auto-trigger TTS
+    // Update the sendMessage function to remove system message
     const sendMessage = async (): Promise<void> => {
         if (!input.trim()) return;
 
@@ -189,13 +187,10 @@ export default function ChatPage() {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    messages: [
-                        { role: 'system', content: systemMessage },
-                        ...updatedMessages.map((msg) => ({
-                            role: msg.role,
-                            content: msg.content,
-                        })),
-                    ],
+                    messages: updatedMessages.map((msg) => ({
+                        role: msg.role,
+                        content: msg.content,
+                    })),
                 }),
             });
 
@@ -262,31 +257,9 @@ export default function ChatPage() {
         chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
     }, [messages]);
 
-    // Function to handle category selection
-    const handleCategorySelect = (category: Category): void => {
-        setSystemMessage(category.systemMessage);
-    };
-
     return (
         <div className="min-h-screen bg-gradient-to-br from-gray-50 to-gray-200 flex flex-col items-center p-4">
             <h2 className="text-3xl font-extrabold text-gray-800 mb-3">AI Assistant</h2>
-
-            {/* Category Selector */}
-            <div className="flex space-x-2 overflow-x-auto p-4 bg-white border-b">
-                {categories.map((cat: Category, idx: number) => (
-                    <button
-                        key={idx}
-                        onClick={() => handleCategorySelect(cat)}
-                        className={`px-4 py-2 rounded-full text-sm font-medium whitespace-nowrap transition-colors ${
-                            systemMessage === cat.systemMessage
-                                ? 'bg-blue-500 text-white'
-                                : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-                        }`}
-                    >
-                        {cat.label}
-                    </button>
-                ))}
-            </div>
 
             {/* Chat Container */}
             <div className="w-full max-w-3xl flex flex-col flex-grow border rounded-lg shadow bg-white overflow-hidden h-[70vh]">
