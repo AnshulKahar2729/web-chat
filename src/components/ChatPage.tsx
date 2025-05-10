@@ -97,6 +97,26 @@ export default function ChatPage() {
             setMessages((prev: Message[]) => prev.map((msg: Message, idx: number) => 
                 idx === messageIndex ? { ...msg, audioUrl } : msg
             ));
+
+            // Auto-play the audio when it's ready
+            const audio = new Audio(audioUrl);
+            setCurrentAudio(audio);
+            
+            audio.onended = () => {
+                setIsPlaying(false);
+                setCurrentAudio(null);
+            };
+
+            audio.onpause = () => {
+                setIsPlaying(false);
+            };
+
+            audio.onplay = () => {
+                setIsPlaying(true);
+            };
+
+            // Play the audio
+            await audio.play();
         } catch (error) {
             console.error('TTS error:', error);
         } finally {
